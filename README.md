@@ -9,3 +9,9 @@ xposed给Cimoc漫画去广告，
 
 已知不支持用于LSPatch注入破解目标app，  
 本项目不提供破解版相关支持，只提供LSPosed支持，  
+
+## Fork自用修改版
+
+1. 去除Cimoc已经不需要的部分广告拦截，防止报错
+2. 更新JDK
+3. 更换包名，安装不会覆盖[原版HookCimoc](https://github.com/AoEiuV020/HookCimoc)

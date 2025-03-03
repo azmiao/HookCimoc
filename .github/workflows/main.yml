@@ -3,178 +3,66 @@ env:
   TZ: Asia/Shanghai
 
 on:
-  push:
-    paths-ignore:
-      - '/readme/*'
-      - '**/README.md'
-      - '.github/workflows/*'
-      - '!.github/workflows/main.yml'
-  pull_request:
-    paths-ignore:
-      - '/readme/*'
-      - '**/README.md'
-      - '.github/workflows/*'
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
-      - name: init custom env
+      - uses: actions/checkout@v4
+      
+      - name: Init Env
         run: |
-          set -a
-          BUILD_NAME="${GITHUB_REPOSITORY#*/}"
-          if [[ ${GITHUB_REF} == refs/tags* ]]
-          then
-              CREATE_RELEASE="true"
-              BUILD_VERSION=${GITHUB_REF#refs/tags/}
-              RELEASE_BODY=$(./latest-changelog.sh $BUILD_VERSION |sed '1s/[，,]$//;1s/^\(.*\)$/### \1\n/')
-              if [[ -z "$RELEASE_BODY" ]]
-              then
-                  RELEASE_BODY='### ${{ github.event.head_commit.message }}'
-                  TG_CHANGELOG="$(echo "$RELEASE_BODY"|sed -n "s/### \(.*\)/\1/p" |sed -n '{;=;p}' | sed "N;s/\n/. /g")"
-              else
-                  TG_CHANGELOG=$(./latest-changelog.sh $BUILD_VERSION |sed -n '{;=;p}' | sed "N;s/\n/. /g")
-              fi
-          elif [[ ${GITHUB_REF} == refs/pull* ]]
-          then
-              CREATE_RELEASE="false"
-              num=${GITHUB_REF#refs/pull/}
-              num=${num%/merge}
-              BUILD_VERSION=pr-${num}-"$(date +'%Y%m%d%H%M%S')"
-          else
-              CREATE_RELEASE="true"
-              echo PRE_RELEASE="true" >> .custom_env
-              BUILD_VERSION="$(date +'%Y%m%d%H%M%S')"
-              RELEASE_BODY=$(echo '${{ toJson(github.event.commits) }}' |jq -r 'map("### "+.message)|join("\n\n------\n")')
-              TG_CHANGELOG="$(echo "$RELEASE_BODY"|sed -n "s/### \(.*\)/\1/p" |sed -n '{;=;p}' | sed "N;s/\n/. /g")"
-              VERSION_PREFIX='内测版-'
-          fi
-          BUILD_NAME_WITH_VERSION="$BUILD_NAME-$BUILD_VERSION"
-          echo BUILD_NAME="$BUILD_NAME" >> .custom_env
-          echo BUILD_VERSION="$BUILD_VERSION" >> .custom_env
-          echo BUILD_NAME_WITH_VERSION="$BUILD_NAME_WITH_VERSION" >> .custom_env
-          echo CREATE_RELEASE="$CREATE_RELEASE" >> .custom_env
-          if test -n "$RELEASE_BODY"
-          then
-              echo 'RELEASE_BODY<<EOF' >> .custom_env
-              echo "$RELEASE_BODY" >> .custom_env
-              echo 'EOF' >> .custom_env
-              echo 'UPDATE_BODY<<EOF' >> .custom_env
-              envsubst < template-update.md >> .custom_env
-              echo >> .custom_env
-              echo 'EOF' >> .custom_env
-          fi
-          if [[ "$CREATE_RELEASE" == "true" && -n "${{ secrets.XPOSED_UPLOAD_TOKEN }}" && -n "${{ secrets.XPOSED_UPLOAD_REPO }}" ]]
-          then
-              echo CREATE_XPOSED_RELEASE="true" >> .custom_env
-          fi
-          if [[ "$CREATE_RELEASE" == "true" && -n "${{ secrets.TELEGRAM_TO }}" && -n "${{ secrets.TELEGRAM_TOKEN }}" ]]
-          then
-              echo SEND_TELEGRAM="true" >> .custom_env
-          fi
-          cat .custom_env
-          cat .custom_env >> $GITHUB_ENV
-      - name: set up JDK 1.11
-        uses: actions/setup-java@v1
+          echo "SIGNED_APK=HookCimoc.apk" >> $GITHUB_ENV
+
+      - name: Set JDK
+        uses: actions/setup-java@v4
         with:
-          java-version: 1.11
-      - name: Build with Gradle
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Restore Keystore from Secrets
         run: |
-          ./gradlew :hook:assembleRelease
-      - uses: AoEiuV020/sign-android-release@v2
-        name: Sign hook APK
+          echo "${{ secrets.SIGNING_KEY }}" | tr -d '\n' | base64 --decode > keystore.jks
+
+          if [ ! -f keystore.jks ]; then
+            echo "::error::密钥库文件未生成"
+            exit 1
+          fi
+
+          keytool -list -v \
+            -keystore keystore.jks \
+            -storepass "${{ secrets.KEY_PASSWORD }}" \
+            -alias "${{ secrets.ALIAS }}" || (echo "::error::密钥库验证失败"; exit 1)
+          
+          echo "CURRENT_PATH=$(pwd)"
+          echo "KEYSTORE_PATH=$(pwd)" >> $GITHUB_ENV
+
+      - name: Build Signed APK
         env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
-        if: ${{ env.SIGNING_KEY != '' }}
-        with:
-          releaseDirectory: ./hook/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
-          alias: ${{ secrets.ALIAS }}
-          keyStorePassword: ${{ secrets.KEY_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
-      - name: Build with Gradle
+          KEY_ALIAS: ${{ secrets.ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          find ./hook/build/outputs/apk/release -name '*.apk' -exec mv {} $BUILD_NAME_WITH_VERSION-hook.apk \;
+          ./gradlew :hook:assembleRelease \
+            --build-cache \
+            -Pandroid.injected.signing.store.file=${{ env.KEYSTORE_PATH }}/keystore.jks \
+            -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD \
+            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
+            -Pandroid.injected.signing.key.password=$KEY_PASSWORD
+
+      - name: Rename APK File
+        run: |
+          find ./hook/build/outputs/apk/release -name '*.apk' -exec mv {} ${{ env.SIGNED_APK }} \;
+
       - name: Upload APK
-        uses: actions/upload-artifact@master
+        uses: actions/upload-artifact@v4
         with:
-          name: build
-          path: ${{ env.BUILD_NAME_WITH_VERSION }}*.apk
-      - name: create release
-        if: ${{ env.CREATE_RELEASE == 'true' }}
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.BUILD_VERSION }}
-          release_name: ${{ env.BUILD_VERSION }}
-          body: ${{ env.RELEASE_BODY }}
-          draft: true
-          prerelease: ${{ env.PRE_RELEASE == 'true' }}
-      - name: Upload hook
-        if: ${{ env.CREATE_RELEASE == 'true' }}
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ env.BUILD_NAME_WITH_VERSION }}-hook.apk
-          asset_name: ${{ env.BUILD_NAME_WITH_VERSION }}-hook.apk
-          asset_content_type: application/zip
-      - name: public release
-        if: ${{ env.CREATE_RELEASE == 'true' }}
-        uses: AoEiuV020/publish-release@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          release_id: ${{ steps.create_release.outputs.id }}
+          name: HookCimoc-Action-APK
+          path: ${{ env.SIGNED_APK }}
 
-      - name: create release
-        if: ${{ env.CREATE_XPOSED_RELEASE == 'true' }}
-        id: xposed_create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.XPOSED_UPLOAD_TOKEN }}
-        with:
-          owner: Xposed-Modules-Repo
-          repo: ${{ secrets.XPOSED_UPLOAD_REPO }}
-          commitish: main
-          tag_name: ${{ env.BUILD_VERSION }}
-          release_name: ${{ env.BUILD_VERSION }}
-          body: ${{ env.RELEASE_BODY }}
-          draft: true
-          prerelease: ${{ env.PRE_RELEASE == 'true' }}
-      - name: Upload hook
-        if: ${{ env.CREATE_XPOSED_RELEASE == 'true' }}
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.XPOSED_UPLOAD_TOKEN }}
-        with:
-          upload_url: ${{ steps.xposed_create_release.outputs.upload_url }}
-          asset_path: ${{ env.BUILD_NAME_WITH_VERSION }}-hook.apk
-          asset_name: ${{ env.BUILD_NAME_WITH_VERSION }}-hook.apk
-          asset_content_type: application/zip
-      - name: public release
-        if: ${{ env.CREATE_XPOSED_RELEASE == 'true' }}
-        uses: AoEiuV020/publish-release@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.XPOSED_UPLOAD_TOKEN }}
-        with:
-          owner: Xposed-Modules-Repo
-          repo: ${{ secrets.XPOSED_UPLOAD_REPO }}
-          release_id: ${{ steps.xposed_create_release.outputs.id }}
-
-      - name: Send commit to telegram
-        if: ${{ env.SEND_TELEGRAM == 'true' }}
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_TO }}
-          token: ${{ secrets.TELEGRAM_TOKEN }}
-          format: markdown
-          disable_web_page_preview: true
-          message: ${{ env.UPDATE_BODY }}
-          document: ${{ env.BUILD_NAME_WITH_VERSION }}-hook.apk
+      - name: Cleanup
+        run: |
+          rm -f ${{ env.KEYSTORE_PATH }}/keystore.jks
+          shred -uz ${{ env.KEYSTORE_PATH }}/keystore.jks || true

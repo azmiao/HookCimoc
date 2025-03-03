@@ -15,4 +15,3 @@ dependencyResolutionManagement {
 }
 rootProject.name = "HookCimoc"
 include ':hook'
-include ':app'

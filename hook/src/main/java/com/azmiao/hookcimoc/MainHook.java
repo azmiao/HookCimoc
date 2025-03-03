@@ -1,4 +1,4 @@
-package cc.aoeiuv020.hookcimoc;
+package com.azmiao.hookcimoc;
 
 import android.app.Application;
 import android.app.Instrumentation;
@@ -25,10 +25,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 hookDebug(lpparam);
                 hookPreference(lpparam);
                 hookSplash(lpparam);
-                hookMain(lpparam);
+                // hookMain(lpparam);
                 hookSearch(lpparam);
                 // hookResult(lpparam);
-                hookClip(lpparam);
+                // hookClip(lpparam);
                 hookCopyright(lpparam);
             }
         });
